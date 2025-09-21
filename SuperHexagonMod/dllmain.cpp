@@ -3,6 +3,7 @@
 #include <vector>
 using PrintFunc_t = void(__thiscall*)(void* /*this*/, int x, int y, std::basic_string<char> param_3, int r, int g, int b, bool centered);
 using LogFunc_t = void(__cdecl*)(const char* format, ...);
+using PrepareGame_t = void(__thiscall*)(void* /*this*/);
 
 uintptr_t window;
 
@@ -10,6 +11,13 @@ enum
 {
     IMAGE_BASE = 0x00400000
 };
+
+namespace
+{
+    constexpr int fps_options[] = { 60, 120, 144, 240 };
+    constexpr int fps_options_count = std::size(fps_options);
+    int current_fps_option = 0; // 120 FPS
+}
 
 namespace
 {
@@ -26,68 +34,144 @@ namespace
 {
     PrintFunc_t graphics_printString = nullptr;
     LogFunc_t Log = nullptr;
+    PrepareGame_t superhex_prepareGame = nullptr;
     void initialize_game_functions()
     {
         graphics_printString = reinterpret_cast<PrintFunc_t>(get_address(0x00422c90));
         Log = reinterpret_cast<LogFunc_t>(get_address(0x0044d580));
+        superhex_prepareGame = reinterpret_cast<PrepareGame_t>(get_address(0x00430ce0));
+    }
+}
+
+namespace
+{
+    double lost_movement = 0;
+    
+    void hook_patch_text(SafetyHookContext& ctx)
+    {
+        void* thisPtr = reinterpret_cast<void*>(ctx.edi);
+        graphics_printString(thisPtr, 0, 5, "FPS Unlock Patch", 255, 0, 0, false);
+    }
+
+    void hook_modify_expected_frame_time(SafetyHookContext& ctx)
+    {
+        float time = 60.f / static_cast<float>(fps_options[current_fps_option]);
+        // load into ST0
+        __asm {
+            fld time
+        }
+    }
+
+    void hook_do_not_round_frame_time(float f)
+    {
+        __asm {
+            // directly return it to skip the rounding
+            fld f
+        }
+    }
+
+    void hook_change_target_frame_time(SafetyHookContext& ctx)
+    {
+        // get structure at EDI
+        void* thisPtr = reinterpret_cast<void*>(ctx.edi);
+        // set double at offset 0x40cd0 to 0.008333333 (120 FPS)
+        double* targetFrameTime = reinterpret_cast<double*>(reinterpret_cast<uint8_t*>(thisPtr) + 0x40cd0);
+        *targetFrameTime = 1.0 / static_cast<double>(fps_options[current_fps_option]);
+    }
+
+    void hook_restore_lost_movement(SafetyHookContext& ctx)
+    {
+        // get the double in Xmm1
+        double desired_position = ctx.xmm1.f64[0];
+        // interpret eax as a signed int
+        int actual_position = static_cast<int>(ctx.eax);
+        double position_diff = desired_position - actual_position;
+        lost_movement += position_diff;
+        if (int int_lost_movement = static_cast<int>(lost_movement); int_lost_movement != 0)
+        {
+            ctx.eax += int_lost_movement;
+            lost_movement -= int_lost_movement;
+        }
+    }
+
+    void hook_option_count_down(SafetyHookContext& ctx)
+    {
+        ctx.eax++;
+        ctx.esi++;
+    }
+
+    void hook_option_count_up(SafetyHookContext& ctx)
+    {
+        ctx.ecx++;
+    }
+
+    void hook_draw_option_text(SafetyHookContext& ctx)
+    {
+        void* graphics_ptr = reinterpret_cast<void*>(ctx.edi);
+        int y = *reinterpret_cast<int*>(ctx.ebp - 0x470 + 4 /*EBP seems to be offset by 4...*/);
+        char buffer[32];
+        (void) sprintf_s(buffer, "FPS: %d", fps_options[current_fps_option]);
+        graphics_printString(graphics_ptr, 0, y + 40, buffer, 255, 255, 255, true);
+    }
+
+    void hook_option_select(SafetyHookContext& ctx)
+    {
+        if (ctx.eax == 6)
+        {
+            current_fps_option = (current_fps_option + 1) % fps_options_count;
+            unsigned long long frame_count = *reinterpret_cast<unsigned long long*>(window + 0x4c8);
+            *reinterpret_cast<unsigned long long*>(window + 0x98) = frame_count / fps_options[current_fps_option];
+            void* superhex_ptr = reinterpret_cast<void*>(ctx.edi);
+            superhex_prepareGame(superhex_ptr);
+            *reinterpret_cast<bool*>(reinterpret_cast<uint8_t*>(superhex_ptr) + 0x48) = true;
+        }
     }
 }
 
 
-
-
-void hook_patch_text(SafetyHookContext& ctx)
-{
-    void* thisPtr = reinterpret_cast<void*>(ctx.edi);
-    graphics_printString(thisPtr, 0, 5, "FPS Unlock Patch", 255, 0, 0, false);
-}
-
-void hook_modify_expected_frame_time(SafetyHookContext& ctx)
-{
-    float time = 0.5f; // 120 FPS
-    // load into ST0
-    __asm {
-        fld time
-    }
-}
-
-void hook_change_target_frame_time(SafetyHookContext& ctx)
-{
-    // get structure at EDI
-    void* thisPtr = reinterpret_cast<void*>(ctx.edi);
-    // set double at offset 0x40cd0 to 0.008333333 (120 FPS)
-    double* targetFrameTime = reinterpret_cast<double*>(reinterpret_cast<uint8_t*>(thisPtr) + 0x40cd0);
-    *targetFrameTime = 0.008333333;
-}
-
-std::vector<SafetyHookMid> hooks;
+std::vector<SafetyHookMid> mid_hooks;
+std::vector<SafetyHookInline> inline_hooks;
 
 DWORD WINAPI MainThread(LPVOID lpParam)
 {
     targetModule = GetModuleHandle(L"SuperHexagon.exe");
     initialize_game_functions();
-    hooks.push_back(safetyhook::create_mid(get_address(0x00407c1d), hook_patch_text));
-    hooks.push_back(safetyhook::create_mid(get_address(0x00430deb), hook_change_target_frame_time));
-    for (SafetyHookMid& hook : hooks)
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x00407c1d), hook_patch_text));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x00430deb), hook_change_target_frame_time));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x00424dc5), hook_restore_lost_movement));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x00424d2d), hook_restore_lost_movement));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x004250ef), hook_restore_lost_movement));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x00425145), hook_restore_lost_movement));
+    // options
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x0042600a), hook_option_count_down));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x0042604e), hook_option_count_up));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x00409e65), hook_draw_option_text));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x004261d1), hook_option_select));
+
+    
+    inline_hooks.push_back(safetyhook::create_inline(get_address(0x00431120), hook_modify_expected_frame_time));
+    inline_hooks.push_back(safetyhook::create_inline(get_address(0x00431140), hook_do_not_round_frame_time));
+    
+    for (SafetyHookMid& hook : mid_hooks)
     {
         Log("Mid Hook at %p -> %p. Enable: %d\n", hook.target(), reinterpret_cast<void*>(hook.destination()), hook.enabled());
     }
-    SafetyHookInline h = safetyhook::create_inline(get_address(0x00431120), hook_modify_expected_frame_time);
-    Log("Inline Hook at %p -> %p. Valid: %d\n", h.target(), reinterpret_cast<void*>(h.destination()), h.enabled());
+    
+    for (SafetyHookInline& hook : inline_hooks)
+    {
+        Log("Inline Hook at %p -> %p. Enable: %d\n", hook.target(), reinterpret_cast<void*>(hook.destination()), hook.enabled());
+    }
     //char buffer[256];
     //sprintf_s(buffer, "Test %08x %08x\n", targetModule);
     //MessageBoxA(nullptr, buffer, buffer, MB_OK);
 
+    // TODO move this to a safer spot probably to avoid race conditions
     window = *reinterpret_cast<uintptr_t*>(get_address(0x0055ed28));
     Log("Ptr to window: %p\n", window);
-    // interpret offset 0x4c8 as a long long and store it in a variable
+    /*// interpret offset 0x4c8 as a long long and store it in a variable
     unsigned long long frame_count = *reinterpret_cast<unsigned long long*>(window + 0x4c8);
     // intepret offset 0X98 as a long long and set it to 5
-    *reinterpret_cast<unsigned long long*>(window + 0x98) = frame_count / 120;
-
-    HANDLE current_process = GetCurrentProcess();
-    constexpr byte data[] = {120};
-    WriteProcessMemory(current_process, reinterpret_cast<LPVOID>(get_address(0x432640)), data, 1, nullptr); // NOP out a jump to skip our hook
+    *reinterpret_cast<unsigned long long*>(window + 0x98) = frame_count / 120;*/
     
     while (true)
     {
@@ -112,11 +196,16 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
         }
     } else if (ul_reason_for_call == DLL_PROCESS_DETACH)
     {
-        for (SafetyHookMid& hook : hooks)
+        for (SafetyHookMid& hook : mid_hooks)
         {
             hook.reset();
         }
-        hooks.clear();
+        mid_hooks.clear();
+        for (SafetyHookInline& h : inline_hooks)
+        {
+            h.reset();
+        }
+        inline_hooks.clear();
     }
 	
     return TRUE;
