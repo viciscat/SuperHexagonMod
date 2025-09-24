@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <algorithm>
 #include <safetyhook.hpp>
 #include <vector>
 using PrintFunc_t = void(__thiscall*)(void* /*this*/, int x, int y, std::basic_string<char> param_3, int r, int g, int b, bool centered);
@@ -126,6 +127,20 @@ namespace
             *reinterpret_cast<bool*>(reinterpret_cast<uint8_t*>(superhex_ptr) + 0x48) = true;
         }
     }
+
+    void hook_stupid_stuff(SafetyHookContext& ctx)
+    {
+        ctx.xmm2.f64[0] = 1.0 / 60.0;
+    }
+
+    void hook_clamp_value_to_0(SafetyHookContext& ctx)
+    {
+        // get structure at EDI
+        float* value = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(ctx.edi) + 0x5500);
+        *value = max(*value, 0.0f);
+        // jump to 0x00429388
+        
+    }
 }
 
 
@@ -147,6 +162,8 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     mid_hooks.push_back(safetyhook::create_mid(get_address(0x0042604e), hook_option_count_up));
     mid_hooks.push_back(safetyhook::create_mid(get_address(0x00409e65), hook_draw_option_text));
     mid_hooks.push_back(safetyhook::create_mid(get_address(0x004261d1), hook_option_select));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x00429114), hook_stupid_stuff));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x00429383), hook_clamp_value_to_0));
 
     
     inline_hooks.push_back(safetyhook::create_inline(get_address(0x00431120), hook_modify_expected_frame_time));
