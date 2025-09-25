@@ -139,7 +139,21 @@ namespace
         float* value = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(ctx.edi) + 0x5500);
         *value = max(*value, 0.0f);
         // jump to 0x00429388
-        
+    }
+
+    bool saidGameOver = true;
+    void hook_game_over(SafetyHookContext& ctx)
+    {
+        if (ctx.xmm1.f32[0] >= ctx.xmm3.f32[0] && !saidGameOver)
+        {
+            ctx.eip = get_address(0x004293dc);
+            saidGameOver = true;
+        }
+        else if (ctx.xmm1.f32[0] < ctx.xmm3.f32[0])
+        {
+            ctx.eip = get_address(0x00429574);
+            saidGameOver = false;
+        }
     }
 }
 
@@ -164,6 +178,7 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     mid_hooks.push_back(safetyhook::create_mid(get_address(0x004261d1), hook_option_select));
     mid_hooks.push_back(safetyhook::create_mid(get_address(0x00429114), hook_stupid_stuff));
     mid_hooks.push_back(safetyhook::create_mid(get_address(0x00429383), hook_clamp_value_to_0));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x004293cf), hook_game_over));
 
     
     inline_hooks.push_back(safetyhook::create_inline(get_address(0x00431120), hook_modify_expected_frame_time));
