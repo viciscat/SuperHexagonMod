@@ -5,6 +5,8 @@
 using PrintFunc_t = void(__thiscall*)(void* /*this*/, int x, int y, std::basic_string<char> param_3, int r, int g, int b, bool centered);
 using LogFunc_t = void(__cdecl*)(const char* format, ...);
 using PrepareGame_t = void(__thiscall*)(void* /*this*/);
+using Xml_SetIntValue_t = int(__thiscall*)(void* xml, std::basic_string<char>* name, int value, int which);
+using Xml_GetIntValue_t = int(__thiscall*)(void* xml, std::basic_string<char>* name, int default_value, int which);
 
 enum
 {
@@ -28,11 +30,15 @@ namespace
     PrintFunc_t graphics_printString = nullptr;
     LogFunc_t Log = nullptr;
     PrepareGame_t superhex_prepareGame = nullptr;
+    Xml_SetIntValue_t xml_setIntValue = nullptr;
+    Xml_GetIntValue_t xml_getIntValue = nullptr;
     void initialize_game_functions()
     {
         graphics_printString = reinterpret_cast<PrintFunc_t>(get_address(0x00422c90));
         Log = reinterpret_cast<LogFunc_t>(get_address(0x0044d580));
         superhex_prepareGame = reinterpret_cast<PrepareGame_t>(get_address(0x00430ce0));
+        xml_setIntValue = reinterpret_cast<Xml_SetIntValue_t>(get_address(0x0043fc50));
+        xml_getIntValue = reinterpret_cast<Xml_GetIntValue_t>(get_address(0x0043f780));
     }
 }
 
@@ -165,6 +171,24 @@ namespace
             said_game_over = false;
         }
     }
+
+    void hook_add_fps_option_to_options_file(SafetyHookContext& ctx)
+    {
+        std::basic_string option_name = "SETTINGS:fps";
+        xml_setIntValue(reinterpret_cast<void*>(ctx.esi), &option_name, 0, 0);
+    }
+
+    void hook_read_fps_option(SafetyHookContext& ctx)
+    {
+        std::basic_string option_name = "SETTINGS:fps";
+        set_fps_option(xml_getIntValue(reinterpret_cast<void*>(ctx.edi + 0xd960), &option_name, 0, 0));
+    }
+
+    void hook_save_fps_option(SafetyHookContext& ctx)
+    {
+        std::basic_string option_name = "SETTINGS:fps";
+        xml_setIntValue(reinterpret_cast<void*>(ctx.edi), &option_name, current_fps_option, 0);
+    }
 }
 
 
@@ -189,6 +213,9 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     mid_hooks.push_back(safetyhook::create_mid(get_address(0x00429114), hook_stupid_stuff));
     mid_hooks.push_back(safetyhook::create_mid(get_address(0x00429383), hook_clamp_value_to_0));
     mid_hooks.push_back(safetyhook::create_mid(get_address(0x004293cf), hook_game_over));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x00403bf3), hook_add_fps_option_to_options_file));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x00403e30), hook_read_fps_option));
+    mid_hooks.push_back(safetyhook::create_mid(get_address(0x00419ccc), hook_save_fps_option));
 
     
     inline_hooks.push_back(safetyhook::create_inline(get_address(0x00431120), hook_modify_expected_frame_time));
