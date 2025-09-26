@@ -1,5 +1,4 @@
 #include <windows.h>
-#include <algorithm>
 #include <safetyhook.hpp>
 #include <vector>
 using PrintFunc_t = void(__thiscall*)(void* /*this*/, int x, int y, std::basic_string<char> param_3, int r, int g, int b, bool centered);
