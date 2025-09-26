@@ -1,3 +1,5 @@
+// ReSharper disable CppClangTidyPerformanceNoIntToPtr - needed for hooking
+// ReSharper disable CppParameterMayBeConstPtrOrRef - needed for hooking
 #include <windows.h>
 #include <safetyhook.hpp>
 #include <vector>
@@ -92,7 +94,7 @@ namespace
         // get structure at EDI
         void* thisPtr = reinterpret_cast<void*>(ctx.edi);
         // set double at offset 0x40cd0 to 0.008333333 (120 FPS)
-        double* targetFrameTime = reinterpret_cast<double*>(reinterpret_cast<uint8_t*>(thisPtr) + 0x40cd0);
+        double* targetFrameTime = reinterpret_cast<double*>(static_cast<uint8_t*>(thisPtr) + 0x40cd0);
         *targetFrameTime = 1.0 / static_cast<double>(fps_options[current_fps_option]);
     }
 
@@ -139,7 +141,7 @@ namespace
             set_fps_option((current_fps_option + 1) % fps_options_count);
             void* superhex_ptr = reinterpret_cast<void*>(ctx.edi);
             superhex_prepareGame(superhex_ptr);
-            *reinterpret_cast<bool*>(reinterpret_cast<uint8_t*>(superhex_ptr) + 0x48) = true;
+            *reinterpret_cast<bool*>(static_cast<uint8_t*>(superhex_ptr) + 0x48) = true;
         }
     }
 
@@ -191,10 +193,13 @@ namespace
 }
 
 
-std::vector<SafetyHookMid> mid_hooks;
-std::vector<SafetyHookInline> inline_hooks;
+namespace
+{
+    std::vector<SafetyHookMid> mid_hooks;
+    std::vector<SafetyHookInline> inline_hooks;
+}
 
-DWORD WINAPI MainThread(LPVOID lpParam)
+DWORD WINAPI MainThread(LPVOID lpParam) // NOLINT(misc-use-internal-linkage)
 {
     targetModule = GetModuleHandle(L"SuperHexagon.exe");
     initialize_game_functions();
@@ -251,15 +256,14 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     }
 }
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved)
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved)  // NOLINT(misc-use-internal-linkage)
 {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH)
     {
         //MessageBoxA(NULL, "Mod Loaded!", "Info", MB_OK | MB_ICONINFORMATION);
-        HANDLE handle = CreateThread(nullptr, 0, MainThread, hModule, 0, nullptr);
-        if (!handle)
+        if (HANDLE handle = CreateThread(nullptr, 0, MainThread, hModule, 0, nullptr); !handle)
         {
-            MessageBoxA(NULL, "Failed to create thread!", "Error", MB_OK | MB_ICONERROR);
+            MessageBoxA(nullptr, "Failed to create thread!", "Error", MB_OK | MB_ICONERROR);
             return FALSE;
         }
     } else if (ul_reason_for_call == DLL_PROCESS_DETACH)
