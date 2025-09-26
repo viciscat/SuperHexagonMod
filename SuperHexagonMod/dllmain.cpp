@@ -6,19 +6,10 @@ using PrintFunc_t = void(__thiscall*)(void* /*this*/, int x, int y, std::basic_s
 using LogFunc_t = void(__cdecl*)(const char* format, ...);
 using PrepareGame_t = void(__thiscall*)(void* /*this*/);
 
-uintptr_t window;
-
 enum
 {
     IMAGE_BASE = 0x00400000
 };
-
-namespace
-{
-    constexpr int fps_options[] = { 60, 120, 144, 240 };
-    constexpr int fps_options_count = std::size(fps_options);
-    int current_fps_option = 0; // 120 FPS
-}
 
 namespace
 {
@@ -33,6 +24,7 @@ namespace
 
 namespace
 {
+    uintptr_t window = 0;
     PrintFunc_t graphics_printString = nullptr;
     LogFunc_t Log = nullptr;
     PrepareGame_t superhex_prepareGame = nullptr;
@@ -46,8 +38,27 @@ namespace
 
 namespace
 {
-    double lost_movement = 0;
-    
+    constexpr int fps_options[] = { 60, 120, 144, 240 };
+    constexpr int fps_options_count = std::size(fps_options);
+    int current_fps_option = 0; // 120 FPS
+
+    void set_fps_option(int option)
+    {
+        if (option < 0 || option >= fps_options_count)
+            return;
+        current_fps_option = option;
+        if (window == 0)
+        {
+            Log("Wuh oh, window is null!");
+            return;
+        }
+        unsigned long long frame_count = *reinterpret_cast<unsigned long long*>(window + 0x4c8);
+        *reinterpret_cast<unsigned long long*>(window + 0x98) = frame_count / fps_options[current_fps_option];
+    }
+}
+
+namespace
+{
     void hook_patch_text(SafetyHookContext& ctx)
     {
         void* thisPtr = reinterpret_cast<void*>(ctx.edi);
@@ -57,7 +68,7 @@ namespace
     void hook_modify_expected_frame_time(SafetyHookContext& ctx)
     {
         float time = 60.f / static_cast<float>(fps_options[current_fps_option]);
-        // load into ST0
+        // return is in ST(0)
         __asm {
             fld time
         }
@@ -80,6 +91,7 @@ namespace
         *targetFrameTime = 1.0 / static_cast<double>(fps_options[current_fps_option]);
     }
 
+    double lost_movement = 0;
     void hook_restore_lost_movement(SafetyHookContext& ctx)
     {
         // get the double in Xmm1
@@ -97,13 +109,13 @@ namespace
 
     void hook_option_count_down(SafetyHookContext& ctx)
     {
-        ctx.eax++;
-        ctx.esi++;
+        ctx.eax++; // increase the option count modulo
+        ctx.esi++; // increase by 1 to do -1 instead of -2
     }
 
     void hook_option_count_up(SafetyHookContext& ctx)
     {
-        ctx.ecx++;
+        ctx.ecx++; // increase the option count modulo
     }
 
     void hook_draw_option_text(SafetyHookContext& ctx)
@@ -117,11 +129,9 @@ namespace
 
     void hook_option_select(SafetyHookContext& ctx)
     {
-        if (ctx.eax == 6)
+        if (ctx.eax == 6) // selected option
         {
-            current_fps_option = (current_fps_option + 1) % fps_options_count;
-            unsigned long long frame_count = *reinterpret_cast<unsigned long long*>(window + 0x4c8);
-            *reinterpret_cast<unsigned long long*>(window + 0x98) = frame_count / fps_options[current_fps_option];
+            set_fps_option((current_fps_option + 1) % fps_options_count);
             void* superhex_ptr = reinterpret_cast<void*>(ctx.edi);
             superhex_prepareGame(superhex_ptr);
             *reinterpret_cast<bool*>(reinterpret_cast<uint8_t*>(superhex_ptr) + 0x48) = true;
@@ -141,18 +151,18 @@ namespace
         // jump to 0x00429388
     }
 
-    bool saidGameOver = true;
+    bool said_game_over = true;
     void hook_game_over(SafetyHookContext& ctx)
     {
-        if (ctx.xmm1.f32[0] >= ctx.xmm3.f32[0] && !saidGameOver)
+        if (ctx.xmm1.f32[0] >= ctx.xmm3.f32[0] && !said_game_over)
         {
             ctx.eip = get_address(0x004293dc);
-            saidGameOver = true;
+            said_game_over = true;
         }
         else if (ctx.xmm1.f32[0] < ctx.xmm3.f32[0])
         {
             ctx.eip = get_address(0x00429574);
-            saidGameOver = false;
+            said_game_over = false;
         }
     }
 }
